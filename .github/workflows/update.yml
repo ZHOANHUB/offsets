@@ -1,0 +1,131 @@
+name: ZHOAN Auto-Updater
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  check-and-update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Get Roblox version
+        id: version
+        run: |
+          VERSION=$(curl -s "https://clientsettings.roblox.com/v2/client-version/WindowsPlayer" | python3 -c "import sys,json; print(json.load(sys.stdin).get('clientVersionUpload',''))")
+          echo "roblox=$VERSION" >> $GITHUB_OUTPUT
+          echo "Latest: $VERSION"
+
+      - name: Get current tracked version
+        id: current
+        run: |
+          if [ -f version.json ]; then
+            TRACKED=$(python3 -c "import json; print(json.load(open('version.json')).get('version',''))")
+          else
+            TRACKED=""
+          fi
+          echo "tracked=$TRACKED" >> $GITHUB_OUTPUT
+          echo "Tracked: $TRACKED"
+
+      - name: Check if update needed
+        id: check
+        run: |
+          if [ "${{ steps.version.outputs.roblox }}" != "${{ steps.current.outputs.tracked }}" ]; then
+            echo "update=true" >> $GITHUB_OUTPUT
+          else
+            echo "update=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download and scan Roblox
+        if: steps.check.outputs.update == 'true'
+        id: scan
+        run: |
+          VERSION="${{ steps.version.outputs.roblox }}"
+          echo "Downloading Roblox $VERSION..."
+          wget -q "https://setup.rbxcdn.com/${VERSION}-WindowsPlayer.zip" -O roblox.zip
+          unzip -q roblox.zip
+          find . -name "RobloxPlayerBeta.exe" -exec cp {} RobloxPlayerBeta.exe \;
+          rm -rf roblox.zip
+
+          python3 tools/offset_finder.py RobloxPlayerBeta.exe | tee scan_result.json
+          FOUND=$(python3 -c "import json; print(json.load(open('scan_result.json')).get('found',0))")
+          echo "found=$FOUND" >> $GITHUB_OUTPUT
+          echo "Found $FOUND offsets"
+
+      - name: Update offsets.json
+        if: steps.check.outputs.update == 'true' && steps.scan.outputs.found != '0'
+        run: |
+          python3 -c "
+          import json, sys
+
+          scan = json.load(open('scan_result.json'))
+          module = scan.get('module', {})
+
+          try:
+              current = json.load(open('offsets.json'))
+          except:
+              current = {}
+
+          for k, v in module.items():
+              if v is not None:
+                  current[k] = v
+
+          current['roblox_version'] = '${{ steps.version.outputs.roblox }}'
+
+          with open('offsets.json', 'w') as f:
+              json.dump(current, f, indent=2)
+          print('Updated offsets.json')
+          "
+
+      - name: Update version.json
+        if: steps.check.outputs.update == 'true' && steps.scan.outputs.found != '0'
+        run: |
+          python3 -c "
+          import json
+          data = {
+              'version': '${{ steps.version.outputs.roblox }}',
+              'url': 'https://github.com/${{ github.repository }}/releases/download/v1.0.0/ZHOAN.exe'
+          }
+          with open('version.json', 'w') as f:
+              json.dump(data, f, indent=2)
+          print('Updated version.json')
+          "
+
+      - name: Commit changes
+        if: steps.check.outputs.update == 'true' && steps.scan.outputs.found != '0'
+        run: |
+          git config user.name "ZHOAN Bot"
+          git config user.email "zhoan@bot.com"
+          git add offsets.json version.json
+          git commit -m "auto-update offsets for Roblox ${{ steps.version.outputs.roblox }}"
+          git push
+
+      - name: Save current version
+        if: steps.check.outputs.update == 'true'
+        run: |
+          mkdir -p tools
+          python3 -c "
+          import json
+          data = {'version': '${{ steps.version.outputs.roblox }}'}
+          with open('tools/current_version.json', 'w') as f:
+              json.dump(data, f)
+          "
+          git config user.name "ZHOAN Bot"
+          git config user.email "zhoan@bot.com"
+          git add tools/current_version.json
+          git commit -m "track version ${{ steps.version.outputs.roblox }}" || true
+          git push || true
+
+      - name: Cleanup
+        if: always()
+        run: rm -f RobloxPlayerBeta.exe roblox.zip scan_result.json
