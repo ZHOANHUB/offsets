@@ -30,7 +30,7 @@ jobs:
         id: current
         run: |
           if [ -f version.json ]; then
-            TRACKED=$(python3 -c "import json; print(json.load(open('version.json')).get('version',''))")
+            TRACKED=$(python3 -c "import json; print(json.loads(open('version.json','rb').read().decode('utf-8-sig')).get('version',''))")
           else
             TRACKED=""
           fi
