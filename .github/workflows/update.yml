@@ -52,10 +52,33 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.roblox }}"
           echo "Downloading Roblox $VERSION..."
-          wget -q "https://setup.rbxcdn.com/${VERSION}-WindowsPlayer.zip" -O roblox.zip
-          unzip -q roblox.zip
-          find . -name "RobloxPlayerBeta.exe" -exec cp {} RobloxPlayerBeta.exe \;
-          rm -rf roblox.zip
+
+          # Try multiple download sources
+          DOWNLOADED=false
+          for URL in \
+            "https://setup.rbxcdn.com/${VERSION}-WindowsPlayer.zip" \
+            "https://s3.amazonaws.com/setup.roblox.com/${VERSION}-WindowsPlayer.zip"; do
+            echo "Trying: $URL"
+            wget -q --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+              --timeout=30 "$URL" -O roblox.zip 2>/dev/null
+            if [ $? -eq 0 ] && [ -s roblox.zip ]; then
+              DOWNLOADED=true
+              break
+            fi
+            rm -f roblox.zip
+          done
+
+          if [ "$DOWNLOADED" = true ]; then
+            unzip -oq roblox.zip 2>/dev/null
+            find . -name "RobloxPlayerBeta.exe" -exec cp {} RobloxPlayerBeta.exe \;
+            rm -rf roblox.zip
+          fi
+
+          if [ ! -f RobloxPlayerBeta.exe ]; then
+            echo "Download failed - will use hardcoded offsets"
+            echo "found=0" >> $GITHUB_OUTPUT
+            exit 0
+          fi
 
           python3 tools/offset_finder.py RobloxPlayerBeta.exe | tee scan_result.json
           FOUND=$(python3 -c "import json; print(json.load(open('scan_result.json')).get('found',0))")
